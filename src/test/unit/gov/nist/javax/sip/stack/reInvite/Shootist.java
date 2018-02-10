@@ -39,6 +39,7 @@ import test.tck.msgflow.callflows.ProtocolObjects;
 import java.util.*;
 
 import junit.framework.TestCase;
+import test.tck.msgflow.callflows.NetworkPortAssigner;
 
 /**
  * This class is a UAC template.
@@ -58,16 +59,16 @@ public class Shootist  implements SipListener {
 
     private int counter;
 
-    private static String PEER_ADDRESS = Shootme.myAddress;
+    private String PEER_ADDRESS;
 
-    private static int PEER_PORT = Shootme.myPort;
+    private int PEER_PORT;
 
-    private static String peerHostPort = PEER_ADDRESS + ":" + PEER_PORT;
+    private String peerHostPort;
 
     // To run on two machines change these to suit.
     public static final String myAddress = "127.0.0.1";
 
-    private static final int myPort = 5060;
+    private final int myPort = NetworkPortAssigner.retrieveNextPort();
 
     protected ClientTransaction inviteTid;
 
@@ -97,14 +98,18 @@ public class Shootist  implements SipListener {
 
 	public boolean isTargetRefresh;
 
+	public boolean isAckWithSameBranch = false;
 
 
 
 
-    public Shootist(ProtocolObjects protocolObjects) {
+
+    public Shootist(ProtocolObjects protocolObjects, Shootme shootme) {
         super();
         this.protocolObjects = protocolObjects;
-
+        PEER_ADDRESS = shootme.myAddress;
+        PEER_PORT = shootme.myPort;
+        peerHostPort = PEER_ADDRESS + ":" + PEER_PORT;         
     }
 
 
@@ -225,6 +230,9 @@ public class Shootist  implements SipListener {
                 Dialog dialog = tid.getDialog();
                 CSeqHeader cseq = (CSeqHeader) response.getHeader(CSeqHeader.NAME);
                 Request ackRequest = dialog.createAck( cseq.getSeqNumber() );
+                if (isAckWithSameBranch) {
+                    ackRequest.setHeader(response.getHeader(ViaHeader.NAME));
+                }
                 logger.info("Ack request to send = " + ackRequest);
                 logger.info("Sending ACK");
                 dialog.sendAck(ackRequest);

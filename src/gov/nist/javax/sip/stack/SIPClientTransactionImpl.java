@@ -51,13 +51,6 @@ import gov.nist.javax.sip.message.SIPRequest;
 import gov.nist.javax.sip.message.SIPResponse;
 import gov.nist.javax.sip.stack.IllegalTransactionStateException.Reason;
 
-import java.io.IOException;
-import java.text.ParseException;
-import java.util.ListIterator;
-import java.util.Set;
-import java.util.concurrent.CopyOnWriteArraySet;
-import java.util.concurrent.atomic.AtomicBoolean;
-
 import javax.sip.Dialog;
 import javax.sip.DialogState;
 import javax.sip.InvalidArgumentException;
@@ -72,6 +65,12 @@ import javax.sip.header.ExpiresHeader;
 import javax.sip.header.RouteHeader;
 import javax.sip.header.TimeStampHeader;
 import javax.sip.message.Request;
+import java.io.IOException;
+import java.text.ParseException;
+import java.util.ListIterator;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /*
  * Jeff Keyser -- initial. Daniel J. Martinez Manzano --Added support for TLS message channel.
@@ -230,6 +229,8 @@ public class SIPClientTransactionImpl extends SIPTransactionImpl implements SIPC
   private AtomicBoolean timerKStarted = new AtomicBoolean(false);
   private boolean transactionTimerCancelled = false;
   private Set<Integer> responsesReceived = new CopyOnWriteArraySet<Integer>();
+  
+  private boolean terminateDialogOnCleanUp = true;
 
   public class TransactionTimer extends SIPStackTimerTask {
 
@@ -800,9 +801,9 @@ public class SIPClientTransactionImpl extends SIPTransactionImpl implements SIPC
       boolean ackAlreadySent = false;
       // if (dialog != null && dialog.isAckSeen() && dialog.getLastAckSent() != null)
       if (dialog != null && dialog.isAckSent(transactionResponse.getCSeq().getSeqNumber())) {
-        if (dialog.getLastAckSent().getCSeq().getSeqNumber() == transactionResponse.getCSeq()
+        if (dialog.getLastAckSentCSeq().getSeqNumber() == transactionResponse.getCSeq()
                                                                                    .getSeqNumber()
-            && transactionResponse.getFromTag().equals(dialog.getLastAckSent().getFromTag()))
+            && transactionResponse.getFromTag().equals(dialog.getLastAckSentFromTag()))
         {
           // the last ack sent corresponded to this response
           ackAlreadySent = true;
@@ -1545,7 +1546,7 @@ public class SIPClientTransactionImpl extends SIPTransactionImpl implements SIPC
     int code = sipResponse.getStatusCode();
     boolean isRetransmission = !responsesReceived.add(Integer.valueOf(code));
     if (code > 100 && code < 200 && isRetransmission) {
-      if (lastResponse != null && !sipResponse.toString().equals(lastResponse.toString())) {
+      if (lastResponse != null && !sipResponse.equals(lastResponse)) {
         isRetransmission = false;
       }
     }
@@ -1966,10 +1967,12 @@ public class SIPClientTransactionImpl extends SIPTransactionImpl implements SIPC
       // }
     }
     
-    // If dialog is null state, no response is received and we should clean it up now, 
-    // it's hopeless to recover. Refers to this issue https://github.com/usnistgov/jsip/issues/8
-    if(this.defaultDialog != null && this.defaultDialog.getState() == null) {
-    	this.defaultDialog.setState(SIPDialog.TERMINATED_STATE);
+    if (terminateDialogOnCleanUp) {
+      // If dialog is null state, no response is received and we should clean it up now, 
+      // it's hopeless to recover. Refers to this issue https://github.com/usnistgov/jsip/issues/8
+      if(this.defaultDialog != null && this.defaultDialog.getState() == null) {
+      	this.defaultDialog.setState(SIPDialog.TERMINATED_STATE);
+      }
     }
 
   }
@@ -2029,4 +2032,11 @@ public class SIPClientTransactionImpl extends SIPTransactionImpl implements SIPC
     return originalRequest.getRequestURI().getScheme();
   }
 
+  /**
+   * @see gov.nist.javax.sip.stack.SIPClientTransaction#setTerminateDialogOnCleanUp(boolean)
+   */
+  public void setTerminateDialogOnCleanUp(boolean enabled) {
+    terminateDialogOnCleanUp = enabled;
+  }
+  
 }

@@ -210,7 +210,7 @@ public class SniffMessage implements ParseExceptionListener {
         } catch (ClassNotFoundException e) {
             System.out.println("could not find class -- internal error");
             e.printStackTrace();
-            System.exit(0);
+            System.exit(2);
         }
 
     }

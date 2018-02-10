@@ -36,6 +36,7 @@ import java.text.ParseException;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Scanner;
 
 import javax.sip.header.ContentDispositionHeader;
@@ -59,6 +60,7 @@ public class MultipartMimeContentImpl implements MultipartMimeContent {
   private ContentTypeHeader multipartMimeContentTypeHeader;
   private String boundary;
 
+  
   /**
    * Creates a default content list.
    */
@@ -121,9 +123,15 @@ public class MultipartMimeContentImpl implements MultipartMimeContent {
       // scanner.useDelimiter("--" + boundary + "(--)?\r?\n?");
       scanner.useDelimiter("\r?\n?--" + boundary + "(--)?\r?\n?");
       while (scanner.hasNext()) {
-        String bodyPart = scanner.next();
-        Content partContent = parseBodyPart(bodyPart);
-        contentList.add(partContent);
+    	  try {
+    		  String bodyPart = scanner.next();
+    		  Content partContent = parseBodyPart(bodyPart);
+    		  contentList.add(partContent);
+    	  } catch (NoSuchElementException e) {
+    		  // ignore
+    	    // this is needed for a jain sip bug #16: the scanner which detects an extra
+    	    // delimiter when the body is a multiple of the buffer size
+    	  }
       }
     } else {
       // No boundary had been set, we will consider the body as a single part
@@ -134,17 +142,29 @@ public class MultipartMimeContentImpl implements MultipartMimeContent {
   }
 
   private ContentImpl parseBodyPart(String bodyPart) throws ParseException {
-    String[] nextPartSplit = bodyPart.split("\r?\n\r?\n", 2);
-
     String headers[] = null;
     String bodyContent;
-    if (nextPartSplit.length == 2) {
-      headers = nextPartSplit[0].split("\r?\n");
-      bodyContent = nextPartSplit[1];
-    } else {
+    
+    // if a empty line starts the body it means no headers are present
+    if (bodyPart.startsWith("\n") || bodyPart.startsWith("\r\n")) {
       bodyContent = bodyPart;
-    }
+    } else {
+      // limit the number of crlf (new lines) we split on, only split the header from
+      // the body and don't split on any crlf in the body  
+      String[] nextPartSplit = bodyPart.split("\r?\n\r?\n", 2);
 
+      bodyContent = bodyPart;
+      
+      if (nextPartSplit.length == 2) {
+        // since we aren't completely sure the data is a header let's test the first one
+        String potentialHeaders[] = nextPartSplit[0].split("\r?\n");
+        if (potentialHeaders[0].indexOf(":") > 0) {
+          headers = potentialHeaders;
+          bodyContent = nextPartSplit[1];
+        }
+      }
+    }
+    
     ContentImpl content = new ContentImpl(bodyContent);
     if (headers != null) {
       for (String partHeader : headers) {

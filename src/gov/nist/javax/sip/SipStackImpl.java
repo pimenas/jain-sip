@@ -50,11 +50,11 @@ import gov.nist.javax.sip.stack.DefaultMessageLogFactory;
 import gov.nist.javax.sip.stack.DefaultRouter;
 import gov.nist.javax.sip.stack.MessageProcessor;
 import gov.nist.javax.sip.stack.MessageProcessorFactory;
+import gov.nist.javax.sip.stack.NIOMode;
 import gov.nist.javax.sip.stack.OIOMessageProcessorFactory;
 import gov.nist.javax.sip.stack.SIPEventInterceptor;
 import gov.nist.javax.sip.stack.SIPMessageValve;
 import gov.nist.javax.sip.stack.SIPTransactionStack;
-import gov.nist.javax.sip.stack.SocketTimeoutAuditor;
 import gov.nist.javax.sip.stack.timers.DefaultSipTimer;
 import gov.nist.javax.sip.stack.timers.SipTimer;
 
@@ -74,6 +74,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Properties;
 import java.util.StringTokenizer;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
@@ -331,6 +332,11 @@ import javax.sip.message.Request;
  * is wide open to starvation attacks) and the client can be as slow as it wants
  * to be.</li>
  * 
+ * <li><b>gov.nist.javax.sip.CONNECTION_TIMEOUT = integer </b> <br/>
+ * This is relevant for outgoing TCP connections to prevent long Thread blocks.
+ * This defines the timeout in milliseconds the stack will wait to open
+ * a TCP connection before giving up.Default value is 10000</li>
+ *  * 
  * <li><b>gov.nist.javax.sip.NETWORK_LAYER = classpath </b> <br/>
  * This is an EXPERIMENTAL property (still under active devlopment). Defines a
  * network layer that allows a client to have control over socket allocations
@@ -373,6 +379,11 @@ import javax.sip.message.Request;
  * end the SIP call. A new socket will be established when needed for any existing calls
  * by the SIP RFC spec.
  * </li>
+ * 
+ * <li><b>gov.nist.javax.sip.NIO_BLOCKING_MODE = String </b> <br/>
+ * Defines the blocking mode for the NioMessageFactory. By default it will be set
+ * as "BLOCKING". Set to "NONBLOCKING" for nonBlocking connect behavior
+ * </li> * 
  * 
  * <li><b>gov.nist.javax.sip.stack.USE_DIRECT_BUFFERS = [true|false]</b> <br/>
  * Default is <it>true</it> If set to <it>false</it>, the NIO stack won't use direct buffers.
@@ -549,12 +560,13 @@ import javax.sip.message.Request;
  * if the registered SipListener is of type SipListenerExt
  * </li>
  * 
- * <li><b>gov.nist.javax.sip.SIP_MESSAGE_VALVE= String</b> Default to null. The class name of your custom valve component.
- * An instance of this class will be created and the SIPMessageValve.processRequest/Response() methods will be called for every message
- * before any long-lived SIP Stack resources are allocated (no transactions, no dialogs). From within the processRequest callback
- * implementation you can drop messages, send a response statelessly or otherwise transform/pre-process the message before it reaches
- * the next steps of the pipeline. Similarly from processResponse() you can manipulate a response or drop it silently, but dropping
- * responses is not recommended, because the transaction already exists when the request for the response was sent.
+ * <li><b>gov.nist.javax.sip.SIP_MESSAGE_VALVE= String</b> Default to null. The class name collection of your custom valve components. The classes
+ * are separated by comma and the order will be honored later when invoking the callbacks. All instances of these classes will be created and
+ * the SIPMessageValve.processRequest/Response() methods will be called for every message before any long-lived SIP Stack resources are allocated
+ * (no transactions, no dialogs). From within the processRequest callback implementation you can drop messages, send a response statelessly or
+ * otherwise transform/pre-process the message before it reaches the next steps of the pipeline. Similarly from processResponse() you can manipulate
+ * a response or drop it silently, but dropping responses is not recommended, because the transaction already exists when the request for the response
+ * was sent.
  * </li>
  * 
  * <li><b>gov.nist.javax.sip.SIP_EVENT_INTERCEPTOR</b> Default to null. The class name of your custom interceptor object.
@@ -695,7 +707,7 @@ public class SipStackImpl extends SIPTransactionStack implements
 		super.setMessageFactory(msgFactory);
 		this.eventScanner = new EventScanner(this);
 		this.listeningPoints = new Hashtable<String, ListeningPointImpl>();
-		this.sipProviders = Collections.synchronizedList(new LinkedList<SipProviderImpl>());
+		this.sipProviders = new CopyOnWriteArrayList<SipProviderImpl>();
 		try {
 			Charset charset = Charset.forName("UTF-8");
 			if (charset == null) {
@@ -714,7 +726,7 @@ public class SipStackImpl extends SIPTransactionStack implements
 		super.reInit();
 		this.eventScanner = new EventScanner(this);
 		this.listeningPoints = new Hashtable<String, ListeningPointImpl>();
-		this.sipProviders = Collections.synchronizedList(new LinkedList<SipProviderImpl>());
+		this.sipProviders = new CopyOnWriteArrayList<SipProviderImpl>();
 		this.sipListener = null;
 		if(!getTimer().isStarted()) {			
 			String defaultTimerName = configurationProperties.getProperty("gov.nist.javax.sip.TIMER_CLASS_NAME",DefaultSipTimer.class.getName());
@@ -1238,6 +1250,24 @@ public class SipStackImpl extends SIPTransactionStack implements
 					logger.logError("Bad read timeout " + readTimeout);
 			}
 		}
+                
+		String connTimeout = configurationProperties
+				.getProperty("gov.nist.javax.sip.CONNECTION_TIMEOUT");
+		if (connTimeout != null) {
+			try {
+
+				int rt = Integer.parseInt(connTimeout);
+				if (rt >= 100) {
+					super.connTimeout = rt;
+				} else {
+					System.err.println("Value too low " + readTimeout);
+				}
+			} catch (NumberFormatException nfe) {
+				// Ignore.
+				if (logger.isLoggingEnabled())
+					logger.logError("Bad conn timeout " + readTimeout);
+			}
+		}                
 
 		// Get the address of the stun server.
 
@@ -1387,6 +1417,9 @@ public class SipStackImpl extends SIPTransactionStack implements
 		super.setPatchRport(Boolean.parseBoolean(configurationProperties.getProperty(
 				"gov.nist.javax.sip.ALWAYS_ADD_RPORT", "false")));
 		
+		super.setPatchReceivedRport(Boolean.parseBoolean(configurationProperties.getProperty(
+				"gov.nist.javax.sip.NEVER_ADD_RECEIVED_RPORT", "false")));
+		
 		super.cancelClientTransactionChecked = configurationProperties
 				.getProperty(
 						"gov.nist.javax.sip.CANCEL_CLIENT_TRANSACTION_CHECKED",
@@ -1479,6 +1512,17 @@ public class SipStackImpl extends SIPTransactionStack implements
 				.logError(
 						"Bad configuration value for gov.nist.javax.sip.NIO_MAX_SOCKET_IDLE_TIME=" + maxIdleTimeString, e);			
 		}
+                
+		String nioMode = configurationProperties.getProperty("gov.nist.javax.sip.NIO_BLOCKING_MODE", "BLOCKING");
+		try {
+			super.nioMode = NIOMode.valueOf(nioMode);
+		} catch (Exception e) {
+			logger
+				.logError(
+						"Bad configuration value for gov.nist.javax.sip.NIO_BLOCKING_MODE=" + nioMode, e);			
+		}                
+                
+                
 		
 		String defaultTimerName = configurationProperties.getProperty("gov.nist.javax.sip.TIMER_CLASS_NAME",DefaultSipTimer.class.getName());
 		try {
@@ -1510,22 +1554,25 @@ public class SipStackImpl extends SIPTransactionStack implements
 		
 		String valveClassName = configurationProperties.getProperty("gov.nist.javax.sip.SIP_MESSAGE_VALVE", null);
 		if(valveClassName != null && !valveClassName.equals("")) {
-			try {
-				super.sipMessageValve = (SIPMessageValve) Class.forName(valveClassName).newInstance();
-				final SipStack thisStack = this;
-
+			String[] valves = valveClassName.split(",");
+			for (String valve : valves) {
 				try {
-					Thread.sleep(100);
-					sipMessageValve.init(thisStack);
+					SIPMessageValve sipMessageValve = (SIPMessageValve) Class.forName(valve).newInstance();
+					final SipStack thisStack = this;
+
+					try {
+						Thread.sleep(100);
+						sipMessageValve.init(thisStack);
+					} catch (Exception e) {
+						logger
+						.logError("Error intializing SIPMessageValve", e);
+					}
+					this.sipMessageValves.add(sipMessageValve);
 				} catch (Exception e) {
 					logger
-					.logError("Error intializing SIPMessageValve", e);
+					.logError(
+							"Bad configuration value for gov.nist.javax.sip.SIP_MESSAGE_VALVE", e);			
 				}
-
-			} catch (Exception e) {
-				logger
-				.logError(
-						"Bad configuration value for gov.nist.javax.sip.SIP_MESSAGE_VALVE", e);			
 			}
 		}
 
@@ -1620,11 +1667,6 @@ public class SipStackImpl extends SIPTransactionStack implements
 				this.listeningPoints.put(key, lip);
 				// start processing messages.
 				messageProcessor.start();
-				if(socketTimeoutAuditor == null && nioSocketMaxIdleTime > 0 && messageProcessor instanceof ConnectionOrientedMessageProcessor) {
-		        	// https://java.net/jira/browse/JSIP-471 use property from the stack instead of hard coded 20s
-					socketTimeoutAuditor = new SocketTimeoutAuditor(nioSocketMaxIdleTime);
-					getTimer().scheduleWithFixedDelay(socketTimeoutAuditor, nioSocketMaxIdleTime, nioSocketMaxIdleTime);
-				}
 				return (ListeningPoint) lip;
 			} catch (java.io.IOException ex) {
 				if (logger.isLoggingEnabled())
@@ -1791,11 +1833,14 @@ public class SipStackImpl extends SIPTransactionStack implements
 			logger.logStackTrace();
 		}
 		this.stopStack();
-		if(super.sipMessageValve != null) 
-			super.sipMessageValve.destroy();
+		if(super.sipMessageValves.size() != 0) {
+			for (SIPMessageValve sipMessageValve : super.sipMessageValves) {
+				sipMessageValve.destroy();
+			}
+		}
 		if(super.sipEventInterceptor != null) 
 			super.sipEventInterceptor.destroy();
-		this.sipProviders = Collections.synchronizedList(new LinkedList<SipProviderImpl>());
+		this.sipProviders = new CopyOnWriteArrayList<SipProviderImpl>();
 		this.listeningPoints = new Hashtable<String, ListeningPointImpl>();
 		/*
 		 * Check for presence of an event scanner ( may happen if stack is

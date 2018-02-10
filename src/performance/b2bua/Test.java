@@ -1,5 +1,7 @@
 package performance.b2bua;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.text.ParseException;
 import java.util.Properties;
 import java.util.TooManyListenersException;
@@ -42,7 +44,7 @@ public class Test implements SipListener {
 		Properties props = new Properties();
 		// Load default values
 		try {
-			props.load(Test.class.getResourceAsStream("test.properties"));
+			props.load(new FileInputStream(new File("mss-sip-stack.properties")));
 		} catch (java.io.IOException ex) {
 			ex.printStackTrace();
 		}

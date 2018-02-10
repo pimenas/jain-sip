@@ -336,6 +336,8 @@ public abstract class ConnectionOrientedMessageChannel extends MessageChannel im
                     }
                 }
                 
+              if(!sipStack.isPatchReceivedRport())  
+              {
                 try {
                 	if (mySock != null) { // selfrouting makes socket = null
                         				 // https://jain-sip.dev.java.net/issues/show_bug.cgi?id=297
@@ -376,6 +378,12 @@ public abstract class ConnectionOrientedMessageChannel extends MessageChannel im
                 } catch (java.text.ParseException ex) {
                     InternalErrorHandler.handleException(ex);
                 }
+              }
+              else
+              {
+            	  if(logger.isLoggingEnabled(LogWriter.TRACE_DEBUG))
+            		  logger.logDebug("We did not use recived and rport");
+              }
                 // Use this for outgoing messages as well.
                 if (!this.isCached && mySock != null) { // self routing makes
 									                    // mySock=null
@@ -480,7 +488,7 @@ public abstract class ConnectionOrientedMessageChannel extends MessageChannel im
                         }
                     }
                 } else {
-                	if(sipStack.sipMessageValve == null) { // Allow message valves to nullify messages without error
+                	if(sipStack.sipMessageValves.size() == 0) { // Allow message valves to nullify messages without error
                 		SIPResponse response = sipRequest
                 				.createResponse(Response.SERVICE_UNAVAILABLE);
 
@@ -556,9 +564,8 @@ public abstract class ConnectionOrientedMessageChannel extends MessageChannel im
                         }
                     }
                 } else {
-                	logger
-                    	.logWarning(
-                            "Application is blocked -- could not acquire semaphore -- dropping response");
+                	if (logger.isLoggingEnabled(LogWriter.TRACE_DEBUG))
+                        this.logger.logDebug("null sipServerResponse as could not acquire semaphore or the valve dropped the message.");
                 }
             }
         } finally {
@@ -623,7 +630,7 @@ public abstract class ConnectionOrientedMessageChannel extends MessageChannel im
                     try {
                         if (logger.isLoggingEnabled(LogWriter.TRACE_DEBUG))
                             logger.logDebug(
-                                    "IOException closing sock " + ex);
+                                    "IO issue while closing socket " + ex.getMessage());
                         try {
                             if (sipStack.maxConnections != -1) {
                                 synchronized (messageProcessor) {

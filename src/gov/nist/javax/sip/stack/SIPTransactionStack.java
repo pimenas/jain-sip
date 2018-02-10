@@ -270,6 +270,12 @@ public abstract class SIPTransactionStack implements
      * for after delivery of first byte of message.
      */
     protected int readTimeout;
+    
+    /*
+     * Conn timeout for TCP outgoign sockets -- maximum time in millis the stack
+     * will wait to open a connection.
+     */
+    protected int connTimeout = 10000;    
 
     /*
      * The socket factory. Can be overriden by applications that want direct
@@ -367,6 +373,8 @@ public abstract class SIPTransactionStack implements
     
     protected boolean patchRport = false;
     
+    protected boolean patchReceivedRport = false;
+    
     protected ClientAuthType clientAuth = ClientAuthType.Default;
     
     // ThreadPool when parsed SIP messages are processed. Affects the case when many TCP calls use single socket.
@@ -386,10 +394,12 @@ public abstract class SIPTransactionStack implements
     public MessageProcessorFactory messageProcessorFactory;
     
     public long nioSocketMaxIdleTime;
+    
+    public NIOMode nioMode = NIOMode.BLOCKING;
 
     private ReleaseReferencesStrategy releaseReferencesStrategy = ReleaseReferencesStrategy.None;
 
-    public SIPMessageValve sipMessageValve;
+    public List<SIPMessageValve> sipMessageValves;
     
     public SIPEventInterceptor sipEventInterceptor;
 
@@ -415,13 +425,12 @@ public abstract class SIPTransactionStack implements
     private long sslHandshakeTimeout = -1;
     
     private boolean sslRenegotiationEnabled = false;
-    
-    protected SocketTimeoutAuditor socketTimeoutAuditor = null;
 
     
     public ScheduledExecutorService getSelfRoutingThreadpoolExecutor() {
         if(selfRoutingThreadpoolExecutor == null) {
             if(this.threadPoolSize<=0) {
+                
                 selfRoutingThreadpoolExecutor = new ThreadAffinityExecutor(16);
             } else {
                 selfRoutingThreadpoolExecutor = new ThreadAffinityExecutor(this.threadPoolSize);
@@ -544,6 +553,9 @@ public abstract class SIPTransactionStack implements
         // The default (identity) address lookup scheme
 
         this.addressResolver = new DefaultAddressResolver();
+        
+        // Init vavles list
+        this.sipMessageValves = new ArrayList<SIPMessageValve>();
 
         // Notify may or may not create a dialog. This is handled in
         // the code.
@@ -1120,7 +1132,7 @@ public abstract class SIPTransactionStack implements
                     }
                     //https://github.com/RestComm/jain-sip/issues/60
                     //Now check complementary conditions, to override selected ct, and break
-                   if (notifyMessage.getRequestURI().equals(ct.getOriginalRequest().getContactHeader().getAddress().getURI()) &&
+                   if ((ct.getOriginalRequest() != null && notifyMessage.getRequestURI().equals(ct.getOriginalRequest().getContactHeader().getAddress().getURI())) &&
                 		   (ct.getDefaultDialog() != null || ct.getDialog(dialogId) != null)){
                        if (logger.isLoggingEnabled(LogWriter.TRACE_DEBUG)) {
                            logger.logDebug("Tx compl conditions met." + ct);
@@ -1510,22 +1522,24 @@ public abstract class SIPTransactionStack implements
 
         requestReceived.setMessageChannel(requestMessageChannel);
 
-        if(sipMessageValve != null) {
+        if(sipMessageValves.size() != 0) {
         	// https://java.net/jira/browse/JSIP-511
         	// catching all exceptions so it doesn't make JAIN SIP to fail
         	try {	
-        		if(logger.isLoggingEnabled(LogWriter.TRACE_DEBUG)) {
-                    logger.logDebug(
-                            "Checking SIP message valve " + sipMessageValve + " for Request = " + requestReceived.getFirstLine());
-                }
-	            if(!sipMessageValve.processRequest(
-	                    requestReceived, requestMessageChannel)) {
-	                if(logger.isLoggingEnabled(LogWriter.TRACE_DEBUG)) {
-	                    logger.logDebug(
-	                            "Request dropped by the SIP message valve. Request = " + requestReceived);
-	                }
-	                return null;
-	            }
+        		for (SIPMessageValve sipMessageValve : this.sipMessageValves) {
+        			if(logger.isLoggingEnabled(LogWriter.TRACE_DEBUG)) {
+                        logger.logDebug(
+                                "Checking SIP message valve " + sipMessageValve + " for Request = " + requestReceived.getFirstLine());
+                    }
+        			if(!sipMessageValve.processRequest(
+    	                    requestReceived, requestMessageChannel)) {
+    	                if(logger.isLoggingEnabled(LogWriter.TRACE_DEBUG)) {
+    	                    logger.logDebug(
+    	                            "Request dropped by the SIP message valve. Request = " + requestReceived);
+    	                }
+    	                return null;
+    	            }
+        		}
         	} catch(Exception e) {
         		if(logger.isLoggingEnabled(LogWriter.TRACE_ERROR)) {
                     logger.logError(
@@ -1652,18 +1666,20 @@ public abstract class SIPTransactionStack implements
         // Transaction to handle this request
         SIPClientTransaction currentTransaction;
 
-        if(sipMessageValve != null) {
+        if(sipMessageValves.size() != 0) {
         	// https://java.net/jira/browse/JSIP-511
         	// catching all exceptions so it doesn't make JAIN SIP to fail
         	try {
-	            if(!sipMessageValve.processResponse(
-	                    responseReceived, responseMessageChannel)) {
-	                if(logger.isLoggingEnabled(LogWriter.TRACE_DEBUG)) {
-	                    logger.logDebug(
-	                            "Response dropped by the SIP message valve. Response = " + responseReceived);
-	                }
-	                return null;
-	            }
+        		for (SIPMessageValve sipMessageValve : this.sipMessageValves) {
+        			if(!sipMessageValve.processResponse(
+    	                    responseReceived, responseMessageChannel)) {
+    	                if(logger.isLoggingEnabled(LogWriter.TRACE_DEBUG)) {
+    	                    logger.logDebug(
+    	                            "Response dropped by the SIP message valve. Response = " + responseReceived);
+    	                }
+    	                return null;
+    	            }
+        		}
         	} catch(Exception e) {
         		if(logger.isLoggingEnabled(LogWriter.TRACE_ERROR)) {
                     logger.logError(
@@ -1747,8 +1763,8 @@ public abstract class SIPTransactionStack implements
                 return null;
             }
         } else {
-            if (logger.isLoggingEnabled(LogWriter.TRACE_DEBUG))
-                this.logger.logDebug("Could not aquire semaphore !!");
+        	logger.logWarning(
+                "Application is blocked -- could not acquire semaphore -- dropping response");
         }
 
         if (acquired)
@@ -2556,12 +2572,12 @@ public abstract class SIPTransactionStack implements
                     newChannel = nextProcessor
                             .createMessageChannel(targetHostPort);
                 } catch (UnknownHostException ex) {
-                    if (logger.isLoggingEnabled())
-                        logger.logException(ex);
+                    if (logger.isLoggingEnabled(LogWriter.TRACE_DEBUG))
+                        logger.logDebug("host is not known " + targetHostPort + " " + ex.getMessage());
                     throw ex;
                 } catch (IOException e) {
-                    if (logger.isLoggingEnabled())
-                        logger.logException(e);
+                    if (logger.isLoggingEnabled(LogWriter.TRACE_DEBUG))
+                    	logger.logDebug("host is reachable " + targetHostPort + " " + e.getMessage());
                     // Ignore channel creation error -
                     // try next processor
                 }
@@ -3124,6 +3140,14 @@ public abstract class SIPTransactionStack implements
     public boolean isPatchRport() {
         return patchRport;
     }
+    
+	public void setPatchReceivedRport(boolean patchReceivedRport) {
+		this.patchReceivedRport = patchReceivedRport;
+	}
+	
+	public boolean isPatchReceivedRport() {
+		return patchReceivedRport;
+	}
     
     /**
      * @param maxForkTime

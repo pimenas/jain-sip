@@ -47,6 +47,7 @@ import org.apache.log4j.PatternLayout;
 
 import test.unit.gov.nist.javax.sip.stack.tls.TlsTest;
 import junit.framework.TestCase;
+import test.tck.msgflow.callflows.NetworkPortAssigner;
 
 /**
  * Testing complete websocket scenario browser to server HTTP-Upgrade->INVITE->ACK->MESSAGE->BYE
@@ -58,7 +59,7 @@ public class WebsocketSelfTest extends TestCase {
 
 	private static String transport;
     private static final String myAddress = "127.0.0.1";
-    private String peerHostPort = "127.0.0.1:5070";
+
     private WebsocketServer websocketServer;
     private WebsocketBrowser websocketBrowser;
     
@@ -69,11 +70,12 @@ public class WebsocketSelfTest extends TestCase {
         private  HeaderFactory headerFactory;
         private SipStack sipStack;
         private SipProvider sipProvider;
-        private static final int myPort = 5070;
+        private final int myPort = NetworkPortAssigner.retrieveNextPort();
         private DialogExt dialog;
         public static final boolean callerSendsBye = true;
         boolean ackReceived;
         boolean okByeReceived;
+        String initialInvitePayload;
 
         public void processRequest(RequestEvent requestEvent) {
             Request request = requestEvent.getRequest();
@@ -179,6 +181,7 @@ public class WebsocketSelfTest extends TestCase {
             SipProvider sipProvider = (SipProvider) requestEvent.getSource();
   
             Request request = requestEvent.getRequest();
+            initialInvitePayload = new String ((byte[]) request.getContent());
             try {
                 serverTransaction = sipProvider.getNewServerTransaction(request);
                 dialog = (DialogExt) sipProvider.getNewDialog(serverTransaction);
@@ -326,6 +329,29 @@ public class WebsocketSelfTest extends TestCase {
         private ListeningPoint udpListeningPoint;
         private Dialog dialog;
         public boolean okByeReceived;
+        public String initialInvitePayload = "v=0\r\n"
+                + "o=4855 13760799956958020 13760799956958020"
+                + " IN IP4  129.6.55.78\r\n" + "s=mysession session\r\n"
+                + "p=+46 8 52018010\r\n" + "c=IN IP4  129.6.55.78\r\n"
+                + "t=0 0\r\n" + "m=audio 6022 RTP/AVP 0 4 18\r\n"
+                + "a=rtpmap:0 PCMU/8000\r\n" + "a=rtpmap:4 G723/8000\r\n"
+                + "a=rtpmap:18 G729A/8000\r\n" + "a=ptime:20\r\n";
+        
+        public final int myPort = NetworkPortAssigner.retrieveNextPort();
+        
+        private  String PEER_ADDRESS;
+
+        private  int PEER_PORT;
+
+        private  String peerHostPort;  
+
+        public WebsocketBrowser(WebsocketServer server) {
+            PEER_ADDRESS = myAddress;
+            PEER_PORT = server.myPort;
+            peerHostPort = PEER_ADDRESS + ":" + PEER_PORT;              
+        }
+
+        
         
         public void processRequest(RequestEvent requestReceivedEvent) {
             Request request = requestReceivedEvent.getRequest();
@@ -401,7 +427,7 @@ public class WebsocketSelfTest extends TestCase {
                 headerFactory = sipFactory.createHeaderFactory();
                 addressFactory = sipFactory.createAddressFactory();
                 messageFactory = sipFactory.createMessageFactory();
-                udpListeningPoint = sipStack.createListeningPoint(myAddress, 5060, transport);
+                udpListeningPoint = sipStack.createListeningPoint(myAddress, myPort, transport);
                 sipProvider = sipStack.createSipProvider(udpListeningPoint);
                 WebsocketBrowser listener = this;
                 sipProvider.addSipListener(listener);
@@ -480,14 +506,7 @@ public class WebsocketSelfTest extends TestCase {
                         "my header value");
                 request.addHeader(extensionHeader);
 
-                String sdpData = "v=0\r\n"
-                        + "o=4855 13760799956958020 13760799956958020"
-                        + " IN IP4  129.6.55.78\r\n" + "s=mysession session\r\n"
-                        + "p=+46 8 52018010\r\n" + "c=IN IP4  129.6.55.78\r\n"
-                        + "t=0 0\r\n" + "m=audio 6022 RTP/AVP 0 4 18\r\n"
-                        + "a=rtpmap:0 PCMU/8000\r\n" + "a=rtpmap:4 G723/8000\r\n"
-                        + "a=rtpmap:18 G729A/8000\r\n" + "a=ptime:20\r\n";
-                byte[] contents = sdpData.getBytes();
+                byte[] contents = this.initialInvitePayload.getBytes();
 
                 request.setContent(contents, contentTypeHeader);
               
@@ -543,7 +562,7 @@ public class WebsocketSelfTest extends TestCase {
     	console.activateOptions();
     	Logger.getRootLogger().addAppender(console);
     	this.websocketServer = new WebsocketServer();
-    	this.websocketBrowser = new WebsocketBrowser();
+    	this.websocketBrowser = new WebsocketBrowser(websocketServer);
     }
     
     public void tearDown() {
@@ -556,7 +575,10 @@ public class WebsocketSelfTest extends TestCase {
         this.websocketServer.init();
         this.websocketBrowser.init();
         try {
-            Thread.sleep(8000);
+        	for(int q=0; q<10; q++) {
+            	Thread.sleep(3000);
+            	if(this.websocketServer.okByeReceived) break;
+            }
         } catch (Exception ex) {
 
         }
@@ -564,12 +586,35 @@ public class WebsocketSelfTest extends TestCase {
         assertTrue(this.websocketServer.ackReceived);
     }
     
+    public void testLargeFrame() {
+    	transport = "ws";
+    	StringBuffer sdpData = new StringBuffer("");
+        for(int q=0;q<70000;q++) sdpData.append("\0"); //use null character for large stuff otherwise eclipse may crash
+    	this.websocketBrowser.initialInvitePayload = sdpData.toString();
+        this.websocketServer.init();
+        this.websocketBrowser.init();
+        try {
+        	for(int q=0; q<10; q++) {
+            	Thread.sleep(3000);
+            	if(this.websocketServer.okByeReceived) break;
+            }
+        } catch (Exception ex) {
+
+        }
+        assertTrue(this.websocketServer.okByeReceived);
+        assertTrue(this.websocketServer.ackReceived);
+        assertEquals(this.websocketServer.initialInvitePayload, this.websocketBrowser.initialInvitePayload);
+    }
+    
     public void testTlsWebsocketBrowserServer() {
     	transport = "wss";
         this.websocketServer.init();
         this.websocketBrowser.init();
         try {
-            Thread.sleep(8000);
+        	for(int q=0; q<10; q++) {
+            	Thread.sleep(3000);
+            	if(this.websocketServer.okByeReceived) break;
+            }
         } catch (Exception ex) {
 
         }
